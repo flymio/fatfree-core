@@ -138,7 +138,7 @@ class Mapper extends \DB\Cursor {
 		if (!($cached=$cache->exists($hash=$fw->hash($this->db->dsn().
 			$fw->stringify([$fields,$filter,$options])).($tag?'.'.$tag:'').'.mongo',
 			$result)) || !$ttl || $cached[0]+$ttl<microtime(TRUE)) {
-			if ($options['group']) {
+			if ($options['group']) {				
 				$grp=$this->collection->group(
 					$options['group']['keys'],
 					$options['group']['initial'],
@@ -173,11 +173,20 @@ class Mapper extends \DB\Cursor {
 					$result[]=$this->cursor->getnext();
 			}
 			else {
-				$this->cursor=$collection->find($filter,[
-					'sort'=>$options['order'],
-					'limit'=>$options['limit'],
-					'skip'=>$options['offset']
-				]);
+				$opts = array();
+				if ($options['order']){
+					$opts['sort'] = $options['order'];
+				}
+				if ($options['limit']){
+					$opts['limit'] = $options['limit'];
+				}
+				if ($options['skip']){
+					$opts['skip'] = $options['offset'];
+				}
+
+				$query = new \MongoDB\Driver\Query($filter, $opts);
+				$this->cursor = $this->db->executeQuery($this->db->dbname.'.'.$collection, $query);
+
 				$result=$this->cursor->toarray();
 			}
 			if ($options['group'])
@@ -227,7 +236,9 @@ class Mapper extends \DB\Cursor {
 		if (!($cached=$cache->exists($hash=$fw->hash($fw->stringify(
 			[$filter])).($tag?'.'.$tag:'').'.mongo',$result)) || !$ttl ||
 			$cached[0]+$ttl<microtime(TRUE)) {
-			$result=$this->collection->count($filter?:[]);
+
+
+			$result = $this->command(["count" => $this->collection, "query" => $filter])[0]->n;
 			if ($fw->CACHE && $ttl)
 				// Save to cache backend
 				$cache->set($hash,$result,$ttl);
@@ -264,8 +275,12 @@ class Mapper extends \DB\Cursor {
 			$pkey=['_id'=>$this->document['_id']];
 		}
 		else {
-			$result=$this->collection->insertone($this->document);
-			$pkey=['_id'=>$result->getinsertedid()];
+
+			$bulk = new \MongoDB\Driver\BulkWrite;			
+			$bulk->insert($this->document);
+
+			$result = $this->db->executeBulkWrite('db.'.$this->collection, $bulk);
+			$pkey=['_id'=>$result->getUpsertedIds()];
 		}
 		if (isset($this->trigger['afterinsert']))
 			\Base::instance()->call($this->trigger['afterinsert'],
@@ -287,8 +302,13 @@ class Mapper extends \DB\Cursor {
 		$upsert=['upsert'=>TRUE];
 		if ($this->legacy)
 			$this->collection->update($pkey,$this->document,$upsert);
-		else
-			$this->collection->replaceone($pkey,$this->document,$upsert);
+		else {
+
+			$bulk = new \MongoDB\Driver\BulkWrite;
+			$update=array('$set' => $this->document);
+			$options=$upsert;			
+			$bulk->update($pkey, $update, $options);
+		}
 		if (isset($this->trigger['afterupdate']))
 			\Base::instance()->call($this->trigger['afterupdate'],
 				[$this,$pkey]);
@@ -311,7 +331,7 @@ class Mapper extends \DB\Cursor {
 			}
 			return $this->legacy?
 				$this->collection->remove($filter):
-				$this->collection->deletemany($filter);
+				$this->_delete($filter);
 		}
 		$pkey=['_id'=>$this->document['_id']];
 		if (isset($this->trigger['beforeerase']) &&
@@ -320,12 +340,20 @@ class Mapper extends \DB\Cursor {
 			return FALSE;
 		$result=$this->legacy?
 			$this->collection->remove(['_id'=>$this->document['_id']]):
-			$this->collection->deleteone(['_id'=>$this->document['_id']]);
+			$this->_delete(['_id'=>$this->document['_id']]);
 		parent::erase();
 		if (isset($this->trigger['aftererase']))
 			\Base::instance()->call($this->trigger['aftererase'],
 				[$this,$pkey]);
 		return $result;
+	}
+
+
+
+	function _delete($filter) {
+		$bulk = new \MongoDB\Driver\BulkWrite;
+		$bulk->delete($filter, ['limit' => 0]);
+		$this->db->executeBulkWrite('db.'.$this->collection, $bulk);
 	}
 
 	/**
@@ -387,6 +415,15 @@ class Mapper extends \DB\Cursor {
 		return new \ArrayIterator($this->cast());
 	}
 
+
+	function command($cmd) {
+		$command = new \MongoDB\Driver\Command($cmd);
+		$cursor = $this->db->executeCommand($this->db->dbname, $command);
+
+		return $cursor->toArray();
+	}
+
+
 	/**
 	*	Instantiate class
 	*	@return void
@@ -397,7 +434,7 @@ class Mapper extends \DB\Cursor {
 	function __construct(\DB\Mongo $db,$collection,$fields=NULL) {
 		$this->db=$db;
 		$this->legacy=$db->legacy();
-		$this->collection=$db->selectcollection($collection);
+		$this->collection=$collection;
 		$this->fields=$fields;
 		$this->reset();
 	}

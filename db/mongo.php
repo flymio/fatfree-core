@@ -65,7 +65,9 @@ class Mongo {
 	**/
 	function log($flag=TRUE) {
 		if ($flag) {
-			$cursor=$this->db->selectcollection('system.profile')->find();
+			$query = new MongoDB\Driver\Query();
+			$cursor = $this->db->executeQuery('db.system.profile', $query);
+			//$cursor=$this->db->selectcollection('system.profile')->find();
 			foreach (iterator_to_array($cursor) as $frame)
 				if (!preg_match('/\.system\..+$/',$frame['ns']))
 					$this->log.=date('r',$this->legacy() ?
@@ -82,7 +84,7 @@ class Mongo {
 			if ($this->legacy)
 				$this->db->setprofilinglevel(-1);
 			else
-				$this->db->command(['profile'=>-1]);
+				$this->command(['profile'=>-1]);
 		}
 		return $this->log;
 	}
@@ -97,7 +99,7 @@ class Mongo {
 			if ($this->legacy)
 				$this->db->setprofilinglevel(2);
 			else
-				$this->db->command(['profile'=>2]);
+				$this->command(['profile'=>2]);
 		}
 		return $out;
 	}
@@ -120,6 +122,13 @@ class Mongo {
 		return $this->legacy;
 	}
 
+	function command($cmd) {
+		$command = new \MongoDB\Driver\Command($cmd);
+		$cursor = $this->db->executeCommand($this->dbname, $command);
+
+		return $cursor->toArray();
+	}
+
 	//! Prohibit cloning
 	private function __clone() {
 	}
@@ -132,13 +141,14 @@ class Mongo {
 	**/
 	function __construct($dsn,$dbname,array $options=NULL) {
 		$this->uuid=\Base::instance()->hash($this->dsn=$dsn);
+		$this->dbname = $dbname;
 		if ($this->legacy=class_exists('\MongoClient')) {
 			$this->db=new \MongoDB(new \MongoClient($dsn,$options?:[]),$dbname);
 			$this->db->setprofilinglevel(2);
 		}
 		else {
-			$this->db=(new \MongoDB\Client($dsn,$options?:[]))->$dbname;
-			$this->db->command(['profile'=>2]);
+			$this->db=new \MongoDB\Driver\Manager($dsn);
+			$this->command(['profile'=>2]);
 		}
 	}
 
